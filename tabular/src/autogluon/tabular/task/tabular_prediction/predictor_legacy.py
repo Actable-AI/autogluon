@@ -83,7 +83,7 @@ class TabularPredictorV1:
     def path(self):
         return self._learner.path
 
-    def predict(self, data, model=None, as_pandas=True):
+    def predict(self, data, model=None, as_pandas=True, **kwargs):
         """
         Use trained models to produce predicted labels (in classification) or response values (in regression).
 
@@ -105,9 +105,9 @@ class TabularPredictorV1:
 
         """
         data = self.__get_dataset(data)
-        return self._learner.predict(X=data, model=model, as_pandas=as_pandas)
+        return self._learner.predict(X=data, model=model, as_pandas=as_pandas, **kwargs)
 
-    def predict_proba(self, data, model=None, as_pandas=True, as_multiclass=False):
+    def predict_proba(self, data, model=None, as_pandas=True, as_multiclass=False, **kwargs):
         """
         Use trained models to produce predicted class probabilities rather than class-labels (if task is classification).
         If `predictor.problem_type` is regression, this functions identically to `predict`, returning the same output.
@@ -138,7 +138,7 @@ class TabularPredictorV1:
         For binary classification problems, the output contains for each datapoint only the predicted probability of the positive class, unless you specify `as_multiclass=True`.
         """
         data = self.__get_dataset(data)
-        return self._learner.predict_proba(X=data, model=model, as_pandas=as_pandas, as_multiclass=as_multiclass)
+        return self._learner.predict_proba(X=data, model=model, as_pandas=as_pandas, as_multiclass=as_multiclass, **kwargs)
 
     def evaluate(self, data, silent=False):
         """

@@ -321,6 +321,7 @@ class AbstractModel:
     def predict_proba(self, X, normalize=None, **kwargs):
         if normalize is None:
             normalize = self.normalize_pred_probas
+
         y_pred_proba = self._predict_proba(X=X, **kwargs)
         if normalize:
             y_pred_proba = normalize_pred_probas(y_pred_proba, self.problem_type)
@@ -331,9 +332,9 @@ class AbstractModel:
         X = self.preprocess(X, **kwargs)
 
         if self.problem_type == REGRESSION:
-            return self.model.predict(X)
+            return self.model.predict(X, **kwargs)
 
-        y_pred_proba = self.model.predict_proba(X)
+        y_pred_proba = self.model.predict_proba(X, **kwargs)
         if self.problem_type == BINARY:
             if len(y_pred_proba.shape) == 1:
                 return y_pred_proba

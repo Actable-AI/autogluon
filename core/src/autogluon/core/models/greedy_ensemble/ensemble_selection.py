@@ -154,11 +154,11 @@ class EnsembleSelection:
 
         self.weights_ = weights
 
-    def predict(self, X):
-        y_pred_proba = self.predict_proba(X)
+    def predict(self, X, **kwargs):
+        y_pred_proba = self.predict_proba(X, **kwargs)
         return get_pred_from_proba(y_pred_proba=y_pred_proba, problem_type=self.problem_type)
 
-    def predict_proba(self, X):
+    def predict_proba(self, X, **kwargs):
         return self.weight_pred_probas(X, weights=self.weights_)
 
     @staticmethod

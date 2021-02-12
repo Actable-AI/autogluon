@@ -102,12 +102,13 @@ class AbstractLearner:
             feature_prune=False, holdout_frac=0.1, hyperparameters=None, verbosity=2):
         raise NotImplementedError
 
-    def predict_proba(self, X: DataFrame, model=None, as_pandas=False, as_multiclass=False, inverse_transform=True):
+    def predict_proba(self, X: DataFrame, model=None, as_pandas=False, as_multiclass=False, inverse_transform=True,
+                      **kwargs):
         if as_pandas:
             X_index = copy.deepcopy(X.index)
         else:
             X_index = None
-        y_pred_proba = self.load_trainer().predict_proba(self.transform_features(X), model=model)
+        y_pred_proba = self.load_trainer().predict_proba(self.transform_features(X), model=model, **kwargs)
         if inverse_transform:
             y_pred_proba = self.label_cleaner.inverse_transform_proba(y_pred_proba)
         if as_multiclass and (self.problem_type == BINARY):
@@ -119,12 +120,12 @@ class AbstractLearner:
                 y_pred_proba = pd.Series(data=y_pred_proba, name=self.label, index=X_index)
         return y_pred_proba
 
-    def predict(self, X: DataFrame, model=None, as_pandas=False):
+    def predict(self, X: DataFrame, model=None, as_pandas=False, **kwargs):
         if as_pandas:
             X_index = copy.deepcopy(X.index)
         else:
             X_index = None
-        y_pred_proba = self.predict_proba(X=X, model=model, inverse_transform=False)
+        y_pred_proba = self.predict_proba(X=X, model=model, inverse_transform=False, **kwargs)
         problem_type = self.label_cleaner.problem_type_transform or self.problem_type
         y_pred = get_pred_from_proba(y_pred_proba=y_pred_proba, problem_type=problem_type)
         y_pred = self.label_cleaner.inverse_transform(pd.Series(y_pred))

@@ -249,12 +249,13 @@ class BaggedEnsembleModel(AbstractModel):
             self._n_repeats_finished = self._n_repeats - 1
 
     def predict_proba(self, X, normalize=None, **kwargs):
+        print("BaggedEnsembleModel: ", kwargs)
         model = self.load_child(self.models[0])
         X = self.preprocess(X, model=model, **kwargs)
-        pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
+        pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize, **kwargs)
         for model in self.models[1:]:
             model = self.load_child(model)
-            pred_proba += model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
+            pred_proba += model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize, **kwargs)
         pred_proba = pred_proba / len(self.models)
 
         return pred_proba
