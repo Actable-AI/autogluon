@@ -34,7 +34,7 @@ class FastTextModel(AbstractModel):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._model_bin_available = False
+        self._load_model = None  # Whether to load inner model when loading.
 
     def _set_default_params(self):
         default_params = get_param_baseline()
@@ -59,7 +59,11 @@ class FastTextModel(AbstractModel):
         default_ag_args.update(extra_ag_args)
         return default_ag_args
 
-    def _fit(self, X_train, y_train, **kwargs):
+    def _fit(self,
+             X,
+             y,
+             sample_weight=None,
+             **kwargs):
         if self.problem_type not in (BINARY, MULTICLASS):
             raise ValueError(
                 "FastText model only supports binary or multiclass classification"
@@ -68,7 +72,7 @@ class FastTextModel(AbstractModel):
         try_import_fasttext()
         import fasttext
 
-        params = self.params.copy()
+        params = self._get_model_params()
         quantize_model = params.pop('quantize_model', True)
 
         verbosity = kwargs.get('verbosity', 2)
@@ -80,17 +84,20 @@ class FastTextModel(AbstractModel):
             else:
                 params['verbose'] = 2
 
-        X_train = self.preprocess(X_train)
+        if sample_weight is not None:
+            logger.log(15, "sample_weight not yet supported for FastTextModel, this model will ignore them in training.")
+
+        X = self.preprocess(X)
         logger.debug("NLP features %s", self.features)
 
-        self._label_dtype = y_train.dtype
-        self._label_map = {label: f"__label__{i}" for i, label in enumerate(y_train.unique())}
+        self._label_dtype = y.dtype
+        self._label_map = {label: f"__label__{i}" for i, label in enumerate(y.unique())}
         self._label_inv_map = {v: k for k, v in self._label_map.items()}
         np.random.seed(0)
-        idxs = np.random.permutation(list(range(len(X_train))))
+        idxs = np.random.permutation(list(range(len(X))))
         with tempfile.NamedTemporaryFile(mode="w+t") as f:
             logger.debug("generate training data")
-            for label, text in zip(y_train.iloc[idxs], (X_train[i] for i in idxs)):
+            for label, text in zip(y.iloc[idxs], (X[i] for i in idxs)):
                 f.write(f"{self._label_map[label]} {text}\n")
             f.flush()
             mem_start = psutil.Process().memory_info().rss
@@ -99,7 +106,7 @@ class FastTextModel(AbstractModel):
             if quantize_model:
                 self.model.quantize(input=f.name, retrain=True)
             gc.collect()
-            mem_curr = psutil.Process().memory_info().rss 
+            mem_curr = psutil.Process().memory_info().rss
             self._model_size_estimate = max(mem_curr - mem_start, 100000000 if quantize_model else 800000000)
             logger.debug("finish training FastText model")
 
@@ -142,51 +149,39 @@ class FastTextModel(AbstractModel):
             )
 
         y_pred_proba: np.ndarray = pd.DataFrame(recs).sort_index(axis=1).values
-
-        if self.problem_type == BINARY:
-            if len(y_pred_proba.shape) == 1:
-                return y_pred_proba
-            elif y_pred_proba.shape[1] > 1:
-                return y_pred_proba[:, 1]
-            else:
-                return y_pred_proba
-        elif y_pred_proba.shape[1] > 2:
-            return y_pred_proba
-        else:
-            return y_pred_proba[:, 1]
+        return self._convert_proba_to_unified_form(y_pred_proba)
 
     def save(self, path: str = None, verbose=True) -> str:
+        self._load_model = self.model is not None
         # pickle model parts
-        model = self.model
+        __model = self.model
         self.model = None
-        self._model_bin_available = model is not None
-        path_final = super().save(path=path, verbose=verbose)
-
-        # save fasttext model: fasttext model cannot be pickled; saved it seperately
+        path = super().save(path=path, verbose=verbose)
+        self.model = __model
+        # save fasttext model: fasttext model cannot be pickled; saved it separately
         # TODO: s3 support
-        if self._model_bin_available:
-            fasttext_model_file_name = path_final + self.model_bin_file_name
-            model.save_model(fasttext_model_file_name)
-        self.model = model
-        return path_final
+        if self._load_model:
+            fasttext_model_file_name = path + self.model_bin_file_name
+            self.model.save_model(fasttext_model_file_name)
+        self._load_model = None
+        return path
 
     @classmethod
     def load(cls, path: str, reset_paths=True, verbose=True):
-        try_import_fasttext()
-        import fasttext
-
-        obj: FastTextModel = super().load(path=path, reset_paths=reset_paths, verbose=verbose)
+        model: FastTextModel = super().load(path=path, reset_paths=reset_paths, verbose=verbose)
 
         # load binary fasttext model
-        if obj._model_bin_available:
-            fasttext_model_file_name = obj.path + cls.model_bin_file_name
-            # TODO: hack to subpress a deprecation warning from fasttext 
-            # remove it once offcial fasttext is updated beyond 0.9.2 
+        if model._load_model:
+            try_import_fasttext()
+            import fasttext
+            fasttext_model_file_name = model.path + cls.model_bin_file_name
+            # TODO: hack to subpress a deprecation warning from fasttext
+            # remove it once offcial fasttext is updated beyond 0.9.2
             # https://github.com/facebookresearch/fastText/issues/1067
             with open(os.devnull, 'w') as f, contextlib.redirect_stderr(f):
-                obj.model = fasttext.load_model(fasttext_model_file_name)
-
-        return obj
+                model.model = fasttext.load_model(fasttext_model_file_name)
+        model._load_model = None
+        return model
 
     def get_memory_size(self) -> int:
         return self._model_size_estimate

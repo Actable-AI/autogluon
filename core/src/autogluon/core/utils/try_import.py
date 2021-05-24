@@ -6,10 +6,14 @@ __all__ = [
     'try_import_lightgbm',
     'try_import_xgboost',
     'try_import_faiss',
-    'try_import_fastai_v1',
+    'try_import_fastai',
     'try_import_cv2',
     'try_import_gluonnlp',
-    'try_import_torch']
+    'try_import_torch',
+    'try_import_skopt',
+    'try_import_autogluon_text',
+    'try_import_autogluon_vision',
+    'try_import_rapids_cuml']
 
 
 def try_import_mxboard():
@@ -44,9 +48,13 @@ def try_import_mxnet():
 def try_import_catboost():
     try:
         import catboost
+    except ImportError as e:
+        raise ImportError("`import catboost` failed."
+                          "A quick tip is to install via `pip install catboost`.")
     except ValueError as e:
         raise ImportError("Import catboost failed. Numpy version may be outdated, "
-                          "Please ensure numpy version >=1.16.0. If it is not, please try 'pip uninstall numpy; pip install numpy>=1.17.0' Detailed info: {}".format(str(e)))
+                          "Please ensure numpy version >=1.16.0. If it is not, please try 'pip uninstall numpy -y; pip install numpy>=1.17.0' "
+                          "Detailed info: {}".format(str(e)))
 
 
 def try_import_catboostdev():  # TODO: remove once Catboost 0.24 is released.
@@ -54,7 +62,7 @@ def try_import_catboostdev():  # TODO: remove once Catboost 0.24 is released.
         import catboost  # Need to first import catboost before catboost_dev and not vice-versa
         import catboost_dev
     except (ValueError, ImportError) as e:
-        raise ImportError("Import catboost_dev failed (needed for distillation with CatBoost models). "
+        raise ImportError("`import catboost_dev` failed (needed for distillation with CatBoost models). "
                           "Make sure you can import catboost and then run: 'pip install catboost-dev'."
                           "Detailed info: {}".format(str(e)))
 
@@ -62,8 +70,11 @@ def try_import_catboostdev():  # TODO: remove once Catboost 0.24 is released.
 def try_import_lightgbm():
     try:
         import lightgbm
+    except ImportError as e:
+        raise ImportError("`import lightgbm` failed. "
+                          "A quick tip is to install via `pip install lightgbm`.")
     except OSError as e:
-        raise ImportError("Import lightgbm failed. If you are using Mac OSX, "
+        raise ImportError("`import lightgbm` failed. If you are using Mac OSX, "
                           "Please try 'brew install libomp'. Detailed info: {}".format(str(e)))
 
 
@@ -71,26 +82,32 @@ def try_import_xgboost():
     try:
         import xgboost
     except ImportError:
-        raise ImportError("Import xgboost failed."
+        raise ImportError("`import xgboost` failed. "
                           "A quick tip is to install via `pip install xgboost`.")
+
 
 def try_import_faiss():
     try:
         import faiss
     except ImportError:
         raise ImportError(
-            "Unable to import dependency faiss"
+            "Unable to import dependency faiss. "
             "A quick tip is to install via `pip install faiss-cpu`. ")
 
 
-def try_import_fastai_v1():
+def try_import_fastai():
     try:
         from pkg_resources import parse_version  # pylint: disable=import-outside-toplevel
         import fastai
         fastai_version = parse_version(fastai.__version__)
-        assert parse_version('1.0.61') <= fastai_version < parse_version('2.0.0'), 'Currently, we only support 1.0.61<=fastai<2.0.0'
+        assert parse_version('2.0.0') <= fastai_version < parse_version('3.0.0'), 'Currently, we only support 2.0.0<=fastai<3.0.0'
+
+        # fastai is doing library setup during star imports. These are required for correct library functioning.
+        # Local star imports are not possible in-place, so separate helper packages is created
+        import autogluon.tabular.models.fastainn.imports_helper
+
     except ModuleNotFoundError as e:
-        raise ImportError("Import fastai failed. A quick tip is to install via `pip install fastai==1.*`. "
+        raise ImportError("Import fastai failed. A quick tip is to install via `pip install fastai==2.*`. "
                           "If you are using Mac OSX, please use this torch version to avoid compatibility issues: `pip install torch==1.6.0`.")
 
 
@@ -128,3 +145,40 @@ def try_import_torch():
         raise ImportError("Unable to import dependency torch\n"
                           "A quick tip is to install via `pip install torch`.\n"
                           "The minimum torch version is currently 1.6.")
+
+
+def try_import_skopt():
+    try:
+        import skopt
+    except ImportError:
+        raise ImportError("`import skopt` failed. skopt is an optional dependency and may not be installed.\n"
+                          "A quick tip is to install via `pip install scikit-optimize`.")
+
+
+def try_import_autogluon_text():
+    try:
+        import autogluon.text
+    except ImportError:
+        raise ImportError("`import autogluon.text` failed.\n"
+                          "A quick tip is to install via `pip install autogluon.text`.\n"
+                          "Ensure that the version installed is the same as the version of the other autogluon modules seen in `pip freeze`.")
+
+
+def try_import_autogluon_vision():
+    try:
+        import autogluon.vision
+    except ImportError:
+        raise ImportError("`import autogluon.vision` failed.\n"
+                          "A quick tip is to install via `pip install autogluon.vision`.\n"
+                          "Ensure that the version installed is the same as the version of the other autogluon modules seen in `pip freeze`.")
+
+
+def try_import_rapids_cuml():
+    try:
+        import cuml
+    except ImportError:
+        raise ImportError("`import cuml` failed.\n"
+                          "Ensure that you have a GPU and CUDA installation, and then install RAPIDS.\n"
+                          "You will likely need to create a fresh conda environment based off of a RAPIDS install, and then install AutoGluon on it.\n"
+                          "RAPIDS is highly experimental within AutoGluon, and we recommend to only use RAPIDS if you are an advanced user / developer.\n"
+                          "Please refer to RAPIDS install instructions for more information: https://rapids.ai/start.html#get-rapids")

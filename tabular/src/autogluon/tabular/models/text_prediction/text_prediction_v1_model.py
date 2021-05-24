@@ -1,34 +1,27 @@
-"""Text Prediction Model based on Pretrained Language Model. Version 1"""
+"""Wrapper of the Text Prediction in AutoGluon Text."""
 from typing import Optional
-import collections
 import logging
 import time
+import copy
 import os
-import random
 
 import numpy as np
 import pandas as pd
+from autogluon.core.constants import REGRESSION, BINARY
 
 from autogluon.core.features.types import R_OBJECT, R_INT, R_FLOAT, R_CATEGORY, \
-    S_TEXT_NGRAM, S_TEXT_AS_CATEGORY, S_TEXT_SPECIAL
-from autogluon.core.utils import get_cpu_count, get_gpu_count
-from autogluon.core.utils.exceptions import NoGPUError, NoValidFeatures
-from autogluon.core.utils.utils import default_holdout_frac
+    S_TEXT_NGRAM, S_TEXT_AS_CATEGORY, S_TEXT_SPECIAL, S_IMAGE_PATH
+from autogluon.core.utils import get_cpu_count, get_gpu_count, try_import_mxnet, try_import_autogluon_text
 from autogluon.core.models import AbstractModel
 
 logger = logging.getLogger(__name__)
 
 
-AG_TEXT_IMPORT_ERROR = 'autogluon.text has not been installed. ' \
-                       'You may try to install "autogluon.text" first by running. ' \
-                       '`python3 -m pip install autogluon.text`'
-
-
-class TextPredictionV1Model(AbstractModel):
+class TextPredictorModel(AbstractModel):
     nn_model_name = 'text_nn'
 
     def __init__(self, **kwargs):
-        """The TextPredictionV1Model.
+        """Wrapper of autogluon.text.TextPredictor.
 
         The features can be a mix of
         - text column
@@ -60,95 +53,17 @@ class TextPredictionV1Model(AbstractModel):
             Names of the features.
         feature_metadata
             The feature metadata.
-        debug
-            Whether to turn on debug mode
         """
         super().__init__(**kwargs)
         self._label_column_name = None
-        self._feature_generator = None
-
-    def _preprocess(self, X, fit=False, **kwargs):
-        if fit:
-            from autogluon.features.generators import BulkFeatureGenerator, CategoryFeatureGenerator, IdentityFeatureGenerator
-            # TODO: This feature generator improves scores for TextPrediction when rare categories are present. This should be fixed in TextPrediction.
-            self._feature_generator = BulkFeatureGenerator(generators=[
-                [
-                    CategoryFeatureGenerator(features_in=self.feature_metadata.get_features(valid_raw_types=[R_CATEGORY]), minimum_cat_count=1),
-                    IdentityFeatureGenerator(features_in=self.feature_metadata.get_features(invalid_raw_types=[R_CATEGORY])),
-                ],
-            ], verbosity=0)
-            self._feature_generator.fit(X)
-        return self._feature_generator.transform(X)
-
-    def _build_model(self, X_train, y_train, X_val, y_val, hyperparameters):
-        try:
-            from autogluon.text.text_prediction.text_prediction \
-                import ag_text_prediction_params, merge_params, get_column_properties, \
-                infer_problem_type, infer_eval_stop_log_metrics
-            from autogluon.text.text_prediction.models.basic_v1 import BertForTextPredictionBasic
-        except ImportError:
-            raise ImportError(AG_TEXT_IMPORT_ERROR)
-
-        # Decide the name of the label column
-        if 'label' in X_train.columns:
-            label_col_id = 0
-            while True:
-                self._label_column_name = 'label{}'.format(label_col_id)
-                if self._label_column_name not in X_train.columns:
-                    break
-                label_col_id += 1
-        else:
-            self._label_column_name = 'label'
-        if X_val is not None:
-            concat_feature_df = pd.concat([X_train, X_val])
-            concat_feature_df.reset_index(drop=True, inplace=True)
-            concat_label_df = pd.DataFrame({self._label_column_name: pd.concat([y_train, y_val])})
-            concat_label_df.reset_index(drop=True, inplace=True)
-        else:
-            concat_feature_df = X_train
-            concat_label_df = pd.DataFrame({self._label_column_name: y_train})
-        feature_column_properties = get_column_properties(
-            df=concat_feature_df,
-            metadata=None,
-            label_columns=None,
-            provided_column_properties=None
-        )
-
-        label_column_property = get_column_properties(
-            df=concat_label_df,
-            metadata=None,
-            label_columns=None,
-            provided_column_properties=None
-        )
-        column_properties = collections.OrderedDict(list(feature_column_properties.items()) +
-                                                    list(label_column_property.items()))
-        problem_type, label_shape = infer_problem_type(column_properties=column_properties,
-                                                       label_col_name=self._label_column_name)
-        eval_metric, stopping_metric, log_metrics =\
-            infer_eval_stop_log_metrics(problem_type,
-                                        label_shape=label_shape,
-                                        eval_metric=self.eval_metric,
-                                        stopping_metric=self.stopping_metric)
-        search_space = hyperparameters['models']['BertForTextPredictionBasic']['search_space']
-        self.model = BertForTextPredictionBasic(column_properties=column_properties,
-                                                feature_columns=list(X_train.columns),
-                                                label_columns=[self._label_column_name],
-                                                problem_types=[problem_type],
-                                                label_shapes=[label_shape],
-                                                stopping_metric=stopping_metric,
-                                                log_metrics=log_metrics,
-                                                output_directory=os.path.join(self.path, self.name),
-                                                logger=logger,
-                                                base_config=None,
-                                                search_space=search_space)
-        return column_properties
+        self._load_model = None  # Whether to load inner model when loading.
 
     def _get_default_auxiliary_params(self) -> dict:
         default_auxiliary_params = super()._get_default_auxiliary_params()
         extra_auxiliary_params = dict(
             get_features_kwargs=dict(
                 valid_raw_types=[R_INT, R_FLOAT, R_CATEGORY, R_OBJECT],
-                invalid_special_types=[S_TEXT_NGRAM, S_TEXT_AS_CATEGORY, S_TEXT_SPECIAL],
+                invalid_special_types=[S_TEXT_NGRAM, S_TEXT_AS_CATEGORY, S_TEXT_SPECIAL, S_IMAGE_PATH],
             ),
         )
         default_auxiliary_params.update(extra_auxiliary_params)
@@ -162,25 +77,26 @@ class TextPredictionV1Model(AbstractModel):
         return default_ag_args
 
     def _set_default_params(self):
-        try:
-            from autogluon.text.text_prediction.dataset import TabularDataset
-            from autogluon.text.text_prediction.text_prediction import ag_text_prediction_params
-        except ImportError:
-            raise ImportError(AG_TEXT_IMPORT_ERROR)
         super()._set_default_params()
-        self.params = ag_text_prediction_params.create('default_no_hpo')
+        try_import_autogluon_text()
+        from autogluon.text import ag_text_presets
+        self.params = ag_text_presets.create('default')
 
-    def _fit(self, X_train: pd.DataFrame, y_train: pd.Series,
+    def _fit(self,
+             X: pd.DataFrame,
+             y: pd.Series,
              X_val: Optional[pd.DataFrame] = None,
              y_val: Optional[pd.Series] = None,
-             time_limit: Optional[int] = None, **kwargs):
+             time_limit: Optional[int] = None,
+             sample_weight=None,
+             **kwargs):
         """The internal fit function
 
         Parameters
         ----------
-        X_train
+        X
             Features of the training dataset
-        y_train
+        y
             Labels of the training dataset
         X_val
             Features of the validation dataset
@@ -192,116 +108,79 @@ class TextPredictionV1Model(AbstractModel):
             Other keyword arguments
 
         """
-        try:
-            import mxnet as mx
-            from autogluon.text.text_prediction.dataset import TabularDataset, random_split_train_val
-            from autogluon.text.text_prediction.text_prediction import get_recommended_resource
-        except ImportError:
-            raise ImportError(AG_TEXT_IMPORT_ERROR)
+        try_import_mxnet()
+        try_import_autogluon_text()
+        from autogluon.text import TextPredictor
 
-        time_start = time.time()
-
+        # Decide name of the label column
+        if 'label' in X.columns:
+            label_col_id = 0
+            while True:
+                self._label_column_name = 'label{}'.format(label_col_id)
+                if self._label_column_name not in X.columns:
+                    break
+                label_col_id += 1
+        else:
+            self._label_column_name = 'label'
+        X_train = self.preprocess(X, fit=True)
+        if X_val is not None:
+            X_val = self.preprocess(X_val)
         # Get arguments from kwargs
         verbosity = kwargs.get('verbosity', 2)
         num_cpus = kwargs.get('num_cpus', None)
         num_gpus = kwargs.get('num_gpus', None)
+        if sample_weight is not None:  # TODO: support
+            logger.log(15, "sample_weight not yet supported for TextPredictorModel, this model will ignore them in training.")
 
-        # Infer resource
-        resource = get_recommended_resource(nthreads_per_trial=num_cpus,
-                                            ngpus_per_trial=num_gpus)
-
-        if resource['num_gpus'] == 0:
-            raise NoGPUError(f'\tNo GPUs available to train {self.name}. Resources: {resource}')
-
-        # Set seed
-        seed = self.params.get('seed')
-        if seed is not None:
-            random.seed(seed)
-            np.random.seed(seed)
-            mx.random.seed(seed)
-
-        X_train = self.preprocess(X_train, fit=True)
-        if X_val is not None:
-            X_val = self.preprocess(X_val)
-
-        if not self.feature_metadata.get_features(valid_raw_types=['object']):
-            raise NoValidFeatures(f'No text features to train {self.name}.')
-
-        column_properties = self._build_model(X_train=X_train,
-                                              y_train=y_train,
-                                              X_val=X_val,
-                                              y_val=y_val,
-                                              hyperparameters=self.params)
-        # Insert the label column
-        X_train.insert(len(X_train.columns), self._label_column_name, y_train)
+        X_train.insert(len(X_train.columns), self._label_column_name, y)
         if X_val is not None:
             X_val.insert(len(X_val.columns), self._label_column_name, y_val)
-        scheduler_options = self.params['hpo_params']['scheduler_options']
-        search_strategy = self.params['hpo_params']['search_strategy']
-        if scheduler_options is None:
-            scheduler_options = dict()
-        if search_strategy.endswith('hyperband'):
-            # Specific defaults for hyperband scheduling
-            scheduler_options['reduction_factor'] = scheduler_options.get(
-                'reduction_factor', 4)
-            scheduler_options['grace_period'] = scheduler_options.get(
-                'grace_period', 10)
-            scheduler_options['max_t'] = scheduler_options.get(
-                'max_t', 50)
-        if X_val is None:
-            # FIXME: v0.1 Update TextPrediction to use all training data in refit_full
-            holdout_frac = default_holdout_frac(len(X_train), True)
-            X_train, X_val = random_split_train_val(X_train, valid_ratio=holdout_frac)
-        train_data = TabularDataset(X_train,
-                                    column_properties=column_properties,
-                                    label_columns=self._label_column_name)
-        logger.log(15, 'Train Dataset:')
-        logger.log(15, train_data)
-        tuning_data = TabularDataset(X_val,
-                                     column_properties=column_properties,
-                                     label_columns=self._label_column_name)
-        logger.log(15, 'Tuning Dataset:')
-        logger.log(15, tuning_data)
+        assert self.params['tune_kwargs']['num_trials'] == 1 \
+               or self.params['tune_kwargs']['num_trials'] is None,\
+            'Currently, you cannot nest the hyperparameter search in text neural network ' \
+            'and the AutoGluon Tabular.'
 
-        if time_limit is not None:
-            time_limit = time_limit - (time.time() - time_start)
-
-        # FIXME: Inner error message if no text features is not helpful
-        self.model.train(train_data=train_data,
-                         tuning_data=tuning_data,
-                         resource=resource,
-                         time_limits=time_limit,
-                         search_strategy=search_strategy,
-                         search_options=self.params['hpo_params']['search_options'],
-                         scheduler_options=scheduler_options,
-                         num_trials=self.params['hpo_params']['num_trials'],
-                         console_log=verbosity >= 3,
-                         ignore_warning=verbosity < 3,
-                         verbosity=verbosity-1)
+        verbosity_text = max(0, verbosity - 1)
+        root_logger = logging.getLogger()
+        root_log_level = root_logger.level
+        self.model = TextPredictor(label=self._label_column_name,
+                                   problem_type=self.problem_type,
+                                   path=self.path,
+                                   eval_metric=self.eval_metric,
+                                   verbosity=verbosity_text)
+        self.model.fit(train_data=X_train,
+                       tuning_data=X_val,
+                       time_limit=time_limit,
+                       num_gpus=num_gpus,
+                       num_cpus=num_cpus,
+                       hyperparameters=self.params,
+                       seed=self.params.get('seed', 0))
+        self.model.set_verbosity(verbosity)
+        root_logger.setLevel(root_log_level)  # Reset log level
 
     def save(self, path: str = None, verbose=True) -> str:
-        model = self.model
+        self._load_model = self.model is not None
+        __model = self.model
         self.model = None
         # save this AbstractModel object without NN weights
         path = super().save(path=path, verbose=verbose)
-        self.model = model
+        self.model = __model
 
-        text_nn_path = os.path.join(path, self.nn_model_name)
-        model.save(text_nn_path)
-        logger.log(15, f"\tSaved Text NN weights and model hyperparameters to '{text_nn_path}'.")
-
+        if self._load_model:
+            text_nn_path = os.path.join(path, self.nn_model_name)
+            self.model.save(text_nn_path)
+            logger.log(15, f"\tSaved Text NN weights and model hyperparameters to '{text_nn_path}'.")
+        self._load_model = None
         return path
 
     @classmethod
     def load(cls, path: str, reset_paths=True, verbose=True):
-        try:
-            from autogluon.text.text_prediction.dataset import TabularDataset
-            from autogluon.text.text_prediction.models.basic_v1 import BertForTextPredictionBasic
-        except ImportError:
-            raise ImportError(AG_TEXT_IMPORT_ERROR)
-
         model = super().load(path=path, reset_paths=reset_paths, verbose=verbose)
-        model.model = BertForTextPredictionBasic.load(os.path.join(path, cls.nn_model_name))
+        if model._load_model:
+            try_import_autogluon_text()
+            from autogluon.text import TextPredictor
+            model.model = TextPredictor.load(os.path.join(path, cls.nn_model_name))
+        model._load_model = None
         return model
 
     def get_memory_size(self) -> int:
@@ -313,7 +192,7 @@ class TextPredictionV1Model(AbstractModel):
             The total memory size in bytes.
         """
         total_size = 0
-        for k, v in self.model.net.collect_params().items():
+        for k, v in self.model._model.net.collect_params().items():
             total_size += np.dtype(v.dtype).itemsize * np.prod(v.shape)
         return total_size
 
@@ -321,3 +200,12 @@ class TextPredictionV1Model(AbstractModel):
         num_cpus = get_cpu_count()
         num_gpus = get_gpu_count()
         return num_cpus, num_gpus
+
+    def _predict_proba(self, X, **kwargs):
+        X = self.preprocess(X, **kwargs)
+
+        if self.problem_type == REGRESSION:
+            return self.model.predict(X, as_pandas=False)
+
+        y_pred_proba = self.model.predict_proba(X, as_pandas=False)
+        return self._convert_proba_to_unified_form(y_pred_proba)

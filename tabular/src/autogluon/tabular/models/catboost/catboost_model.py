@@ -7,15 +7,16 @@ import time
 import psutil
 import numpy as np
 
-from autogluon.core.utils.exceptions import NotEnoughMemoryError, TimeLimitExceeded
-from autogluon.core.utils import try_import_catboost, try_import_catboostdev
 from autogluon.core.constants import PROBLEM_TYPES_CLASSIFICATION, MULTICLASS, SOFTCLASS
 from autogluon.core.features.types import R_OBJECT
+from autogluon.core.models import AbstractModel
+from autogluon.core.models._utils import get_early_stopping_rounds
+from autogluon.core.utils.exceptions import NotEnoughMemoryError, TimeLimitExceeded
+from autogluon.core.utils import try_import_catboost, try_import_catboostdev
 
 from .catboost_utils import construct_custom_catboost_metric
 from .hyperparameters.parameters import get_param_baseline
 from .hyperparameters.searchspaces import get_default_searchspace
-from autogluon.core.models import AbstractModel
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +61,20 @@ class CatBoostModel(AbstractModel):
 
     # TODO: Use Pool in preprocess, optimize bagging to do Pool.split() to avoid re-computing pool for each fold! Requires stateful + y
     #  Pool is much more memory efficient, avoids copying data twice in memory
-    def _fit(self, X_train, y_train, X_val=None, y_val=None, time_limit=None, num_gpus=0, **kwargs):
+    def _fit(self,
+             X,
+             y,
+             X_val=None,
+             y_val=None,
+             time_limit=None,
+             num_gpus=0,
+             sample_weight=None,
+             sample_weight_val=None,
+             **kwargs):
         try_import_catboost()
         from catboost import CatBoostClassifier, CatBoostRegressor, Pool
-        params = self.params.copy()
+        ag_params = self._get_ag_params()
+        params = self._get_model_params()
         if self.problem_type == SOFTCLASS:
             try_import_catboostdev()  # Need to first import catboost then catboost_dev not vice-versa.
             from catboost_dev import CatBoostClassifier, CatBoostRegressor, Pool
@@ -76,15 +87,15 @@ class CatBoostModel(AbstractModel):
             metric_name = params['eval_metric']
         else:
             metric_name = type(params['eval_metric']).__name__
-        num_rows_train = len(X_train)
-        num_cols_train = len(X_train.columns)
+        num_rows_train = len(X)
+        num_cols_train = len(X.columns)
         if self.problem_type == MULTICLASS:
             if self.num_classes is not None:
                 num_classes = self.num_classes
             else:
-                num_classes = 10  # Guess if not given, can do better by looking at y_train
+                num_classes = 10  # Guess if not given, can do better by looking at y
         elif self.problem_type == SOFTCLASS:  # TODO: delete this elif if it's unnecessary.
-            num_classes = y_train.shape[1]
+            num_classes = y.shape[1]
         else:
             num_classes = 1
 
@@ -101,35 +112,33 @@ class CatBoostModel(AbstractModel):
                 logger.warning('\tWarning: Potentially not enough memory to safely train CatBoost model, roughly requires: %s GB, but only %s GB is available...' % (round(approx_mem_size_req / 1e9, 3), round(available_mem / 1e9, 3)))
 
         start_time = time.time()
-        X_train = self.preprocess(X_train)
-        cat_features = list(X_train.select_dtypes(include='category').columns)
-        X_train = Pool(data=X_train, label=y_train, cat_features=cat_features)
+        X = self.preprocess(X)
+        cat_features = list(X.select_dtypes(include='category').columns)
+        X = Pool(data=X, label=y, cat_features=cat_features, weight=sample_weight)
 
-        if X_val is not None:
-            X_val = self.preprocess(X_val)
-            X_val = Pool(data=X_val, label=y_val, cat_features=cat_features)
-            eval_set = X_val
-            if num_rows_train <= 10000:
-                modifier = 1
-            else:
-                modifier = 10000/num_rows_train
-            early_stopping_rounds = max(round(modifier*150), 10)
-            num_sample_iter_max = max(round(modifier*50), 2)
-        else:
+        if X_val is None:
             eval_set = None
-            early_stopping_rounds = None
             num_sample_iter_max = 50
+            early_stopping_rounds = None
+        else:
+            X_val = self.preprocess(X_val)
+            X_val = Pool(data=X_val, label=y_val, cat_features=cat_features, weight=sample_weight_val)
+            eval_set = X_val
+            modifier = min(1.0, 10000 / num_rows_train)
+            num_sample_iter_max = max(round(modifier * 50), 2)
+            early_stopping_rounds = ag_params.get('ag.early_stop', 'auto')
+            if isinstance(early_stopping_rounds, str):
+                early_stopping_rounds = self._get_early_stopping_rounds(num_rows_train=num_rows_train, strategy=early_stopping_rounds)
 
-        train_dir = None
-        if 'allow_writing_files' in self.params and self.params['allow_writing_files']:
-            if 'train_dir' not in self.params:
+        if params.get('allow_writing_files', False):
+            if 'train_dir' not in params:
                 try:
                     # TODO: What if path is in S3?
                     os.makedirs(os.path.dirname(self.path), exist_ok=True)
                 except:
                     pass
                 else:
-                    train_dir = self.path + 'catboost_info'
+                    params['train_dir'] = self.path + 'catboost_info'
 
         # TODO: Add more control over these params (specifically early_stopping_rounds)
         verbosity = kwargs.get('verbosity', 2)
@@ -178,9 +187,6 @@ class CatBoostModel(AbstractModel):
 
         logger.log(15, f'\tCatboost model hyperparameters: {params}')
 
-        if train_dir is not None:
-            params['train_dir'] = train_dir
-
         if time_limit:
             time_left_start = time_limit - (time.time() - start_time)
             if time_left_start <= time_limit * 0.4:  # if 60% of time was spent preprocessing, likely not enough time to train model
@@ -192,7 +198,7 @@ class CatBoostModel(AbstractModel):
                 **params_init,
             )
             self.model.fit(
-                X_train,
+                X,
                 eval_set=eval_set,
                 use_best_model=True,
                 verbose=verbose,
@@ -200,7 +206,7 @@ class CatBoostModel(AbstractModel):
             )
 
             init_model_tree_count = self.model.tree_count_
-            init_model_best_score = self.model.get_best_score()['validation'][metric_name]
+            init_model_best_score = self._get_best_val_score(self.model, metric_name)
 
             time_left_end = time_limit - (time.time() - start_time)
             time_taken_per_iter = (time_left_start - time_left_end) / num_sample_iter
@@ -255,10 +261,10 @@ class CatBoostModel(AbstractModel):
             elif init_model is not None:
                 fit_final_kwargs['init_model'] = init_model
                 warm_start = True
-            self.model.fit(X_train, **fit_final_kwargs)
+            self.model.fit(X, **fit_final_kwargs)
 
             if init_model is not None:
-                final_model_best_score = self.model.get_best_score()['validation'][metric_name]
+                final_model_best_score = self._get_best_val_score(self.model, metric_name)
 
                 if self.stopping_metric._optimum == init_model_best_score:
                     # Done, pick init_model
@@ -306,3 +312,20 @@ class CatBoostModel(AbstractModel):
         )
         default_auxiliary_params.update(extra_auxiliary_params)
         return default_auxiliary_params
+
+    @staticmethod
+    def _get_best_val_score(model, metric_name):
+        """Necessary to trim extra args off of metric_name, such as 'F1:hints=skip_train~true' -> 'F1'"""
+        model_best_scores = model.get_best_score()['validation']
+        if metric_name in model_best_scores:
+            best_score = model_best_scores[metric_name]
+        else:
+            metric_name_sub = metric_name.split(':')[0]
+            best_score = model_best_scores[metric_name_sub]
+        return best_score
+
+    def _get_early_stopping_rounds(self, num_rows_train, strategy='auto'):
+        return get_early_stopping_rounds(num_rows_train=num_rows_train, strategy=strategy)
+
+    def _ag_params(self) -> set:
+        return {'ag.early_stop'}
