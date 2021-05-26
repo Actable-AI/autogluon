@@ -18,7 +18,7 @@ version = ag.update_version(version)
 submodule = 'tabular'
 requirements = [
     'numpy>=1.19',
-    'scipy>=1.3.3,<1.5.0',
+    'scipy',
     'catboost>=0.23.0,<0.25',
     'xgboost>=1.2,<1.3',
     'lightgbm>=3.0,<4.0',

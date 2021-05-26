@@ -18,12 +18,12 @@ version = ag.update_version(version)
 submodule = 'text'
 requirements = [
     'numpy>=1.19',
-    'scipy>=1.3.3,<1.5.0',
+    'scipy',
     'tqdm>=4.38.0',
     'pandas>=1.0.0,<2.0',
     'scikit-learn>=0.22.0,<0.24',
     f'autogluon.core=={version}',
-    f'autogluon.mxnet=={version}'
+    f'autogluon.mxnet=={version}',
     'pyarrow',
     'autogluon-contrib-nlp==0.0.1b20210201',
 ]

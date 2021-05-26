@@ -472,9 +472,9 @@ class AbstractModel:
         X = self.preprocess(X, **kwargs)
 
         if self.problem_type in [REGRESSION, QUANTILE]:
-            return self.model.predict(X, **kwargs)
+            return self.model.predict(X)
 
-        y_pred_proba = self.model.predict_proba(X, **kwargs)
+        y_pred_proba = self.model.predict_proba(X)
         return self._convert_proba_to_unified_form(y_pred_proba)
 
     def _convert_proba_to_unified_form(self, y_pred_proba):
