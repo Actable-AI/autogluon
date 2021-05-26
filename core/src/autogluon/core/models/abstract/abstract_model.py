@@ -332,9 +332,9 @@ class AbstractModel:
         X = self.preprocess(X, **kwargs)
 
         if self.problem_type == REGRESSION:
-            return self.model.predict(X, **kwargs)
+            return self.model.predict(X)
 
-        y_pred_proba = self.model.predict_proba(X, **kwargs)
+        y_pred_proba = self.model.predict_proba(X)
         if self.problem_type == BINARY:
             if len(y_pred_proba.shape) == 1:
                 return y_pred_proba
