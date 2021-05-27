@@ -846,7 +846,7 @@ class TabularPredictor:
         self.save()
         return self
 
-    def predict(self, data, model=None, as_pandas=True):
+    def predict(self, data, model=None, as_pandas=True, **kwargs):
         """
         Use trained models to produce predictions of `label` column values for new data.
 
@@ -867,9 +867,9 @@ class TabularPredictor:
         Array of predictions, one corresponding to each row in given dataset. Either :class:`np.ndarray` or :class:`pd.Series` depending on `as_pandas` argument.
         """
         data = self.__get_dataset(data)
-        return self._learner.predict(X=data, model=model, as_pandas=as_pandas)
+        return self._learner.predict(X=data, model=model, as_pandas=as_pandas, **kwargs)
 
-    def predict_proba(self, data, model=None, as_pandas=True, as_multiclass=False):
+    def predict_proba(self, data, model=None, as_pandas=True, as_multiclass=False, **kwargs):
         """
         Use trained models to produce predicted class probabilities rather than class-labels (if task is classification).
         If `predictor.problem_type` is regression, this functions identically to `predict`, returning the same output.
@@ -901,7 +901,7 @@ class TabularPredictor:
         For binary classification problems, the output contains for each datapoint the predicted probabilities of the negative and positive classes, unless you specify `as_multiclass=False`.
         """
         data = self.__get_dataset(data)
-        return self._learner.predict_proba(X=data, model=model, as_pandas=as_pandas, as_multiclass=as_multiclass)
+        return self._learner.predict_proba(X=data, model=model, as_pandas=as_pandas, as_multiclass=as_multiclass, **kwargs)
 
     def evaluate(self, data, model=None, silent=False, auxiliary_metrics=True, detailed_report=False) -> dict:
         """

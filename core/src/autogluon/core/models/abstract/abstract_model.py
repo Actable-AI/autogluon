@@ -10,6 +10,7 @@ import warnings
 from typing import Union
 
 import numpy as np
+from numpy.lib.function_base import quantile
 import pandas as pd
 
 from ._tags import _DEFAULT_TAGS
@@ -470,11 +471,14 @@ class AbstractModel:
 
     def _predict_proba(self, X, **kwargs):
         X = self.preprocess(X, **kwargs)
+        quantile = kwargs['quantile'] if "quantile" in kwargs else None
 
         if self.problem_type in [REGRESSION, QUANTILE]:
-            return self.model.predict(X)
+            return self.model.predict(X, quantile=quantile) if quantile is not None \
+                else self.model.predict(X)
 
-        y_pred_proba = self.model.predict_proba(X)
+        y_pred_proba = self.model.predict_proba(X, quantile=quantile) if quantile is not None \
+                else self.model.predict_proba(X)
         return self._convert_proba_to_unified_form(y_pred_proba)
 
     def _convert_proba_to_unified_form(self, y_pred_proba):
