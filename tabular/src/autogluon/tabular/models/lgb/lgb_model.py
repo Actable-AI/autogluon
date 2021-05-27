@@ -10,19 +10,19 @@ import numpy as np
 import pandas as pd
 from pandas import DataFrame, Series
 
-from autogluon.core.utils.savers import save_pkl
-from autogluon.core.utils import try_import_lightgbm
 from autogluon.core import Int, Space
 from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION, SOFTCLASS
 from autogluon.core.features.types import R_OBJECT
+from autogluon.core.models import AbstractModel
+from autogluon.core.models._utils import get_early_stopping_rounds
+from autogluon.core.utils import try_import_lightgbm
+from autogluon.core.utils.savers import save_pkl
 
 from . import lgb_utils
-from .callbacks import early_stopping_custom
 from .hyperparameters.lgb_trial import lgb_trial
 from .hyperparameters.parameters import get_param_baseline
 from .hyperparameters.searchspaces import get_default_searchspace
 from .lgb_utils import construct_dataset
-from autogluon.core.models import AbstractModel
 from ..utils import fixedvals_from_searchspaces
 
 warnings.filterwarnings("ignore", category=UserWarning, message="Starting from version")  # lightGBM brew libomp warning
@@ -35,6 +35,9 @@ class LGBModel(AbstractModel):
     LightGBM model: https://lightgbm.readthedocs.io/en/latest/
 
     Hyperparameter options: https://lightgbm.readthedocs.io/en/latest/Parameters.html
+
+    Extra hyperparameter options:
+        ag.early_stop : int, specifies the early stopping rounds. Defaults to an adaptive strategy. Recommended to keep default.
     """
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -59,12 +62,22 @@ class LGBModel(AbstractModel):
             stopping_metric_name = stopping_metric
         return stopping_metric, stopping_metric_name
 
-    def _fit(self, X_train=None, y_train=None, X_val=None, y_val=None, dataset_train=None, dataset_val=None, time_limit=None, num_gpus=0, **kwargs):
+    def _fit(self,
+             X=None,
+             y=None,
+             X_val=None,
+             y_val=None,
+             dataset_train=None,
+             dataset_val=None,
+             time_limit=None,
+             num_gpus=0,
+             sample_weight=None,
+             sample_weight_val=None,
+             verbosity=2,
+             **kwargs):
         start_time = time.time()
-        params = self.params.copy()
-
-        # TODO: kwargs can have num_cpu, num_gpu. Currently these are ignored.
-        verbosity = kwargs.get('verbosity', 2)
+        ag_params = self._get_ag_params()
+        params = self._get_model_params()
         params = fixedvals_from_searchspaces(params)
 
         if verbosity <= 1:
@@ -77,7 +90,11 @@ class LGBModel(AbstractModel):
             verbose_eval = 1
 
         stopping_metric, stopping_metric_name = self._get_stopping_metric_internal()
-        dataset_train, dataset_val = self.generate_datasets(X_train=X_train, y_train=y_train, params=params, X_val=X_val, y_val=y_val, dataset_train=dataset_train, dataset_val=dataset_val)
+        dataset_train, dataset_val = self.generate_datasets(
+            X=X, y=y, params=params, X_val=X_val, y_val=y_val,
+            sample_weight=sample_weight, sample_weight_val=sample_weight_val,
+            dataset_train=dataset_train, dataset_val=dataset_val
+        )
         gc.collect()
 
         num_boost_round = params.pop('num_boost_round', 1000)
@@ -98,17 +115,17 @@ class LGBModel(AbstractModel):
             if params['min_data_in_leaf'] > num_rows_train:  # TODO: may not be necessary
                 params['min_data_in_leaf'] = max(1, int(num_rows_train / 5.0))
 
-        # TODO: Better solution: Track trend to early stop when score is far worse than best score, or score is trending worse over time
-        if (dataset_val is not None) and (dataset_train is not None):
-            modifier = 1 if num_rows_train <= 10000 else 10000 / num_rows_train
-            early_stopping_rounds = max(round(modifier * 150), 10)
-        else:
-            early_stopping_rounds = 150
-
         callbacks = []
         valid_names = ['train_set']
         valid_sets = [dataset_train]
         if dataset_val is not None:
+            from .callbacks import early_stopping_custom
+            # TODO: Better solution: Track trend to early stop when score is far worse than best score, or score is trending worse over time
+            early_stopping_rounds = ag_params.get('ag.early_stop', 'adaptive')
+            if isinstance(early_stopping_rounds, (str, tuple, list)):
+                early_stopping_rounds = self._get_early_stopping_rounds(num_rows_train=num_rows_train, strategy=early_stopping_rounds)
+            if early_stopping_rounds is None:
+                early_stopping_rounds = 999999
             reporter = kwargs.get('reporter', None)
             train_loss_name = self._get_train_loss_name() if reporter is not None else None
             if train_loss_name is not None:
@@ -237,39 +254,37 @@ class LGBModel(AbstractModel):
         else:
             return X
 
-    def generate_datasets(self, X_train: DataFrame, y_train: Series, params, X_val=None, y_val=None, dataset_train=None, dataset_val=None, save=False):
+    def generate_datasets(self, X: DataFrame, y: Series, params, X_val=None, y_val=None, sample_weight=None, sample_weight_val=None, dataset_train=None, dataset_val=None, save=False):
         lgb_dataset_params_keys = ['objective', 'two_round', 'num_threads', 'num_classes', 'verbose']  # Keys that are specific to lightGBM Dataset object construction.
         data_params = {key: params[key] for key in lgb_dataset_params_keys if key in params}.copy()
 
-        W_train = None  # TODO: Add weight support
-        W_test = None  # TODO: Add weight support
-        if X_train is not None:
-            X_train = self.preprocess(X_train, is_train=True)
+        if X is not None:
+            X = self.preprocess(X, is_train=True)
         if X_val is not None:
             X_val = self.preprocess(X_val)
         # TODO: Try creating multiple Datasets for subsets of features, then combining with Dataset.add_features_from(), this might avoid memory spike
 
-        y_train_og = None
+        y_og = None
         y_val_og = None
         if self.problem_type == SOFTCLASS:
-            if (not dataset_train) and (X_train is not None) and (y_train is not None):
-                y_train_og = np.array(y_train)
-                y_train = pd.Series([0]*len(X_train))  # placeholder dummy labels to satisfy lgb.Dataset constructor
+            if (not dataset_train) and (X is not None) and (y is not None):
+                y_og = np.array(y)
+                y = pd.Series([0]*len(X))  # placeholder dummy labels to satisfy lgb.Dataset constructor
             if (not dataset_val) and (X_val is not None) and (y_val is not None):
                 y_val_og = np.array(y_val)
                 y_val = pd.Series([0]*len(X_val))  # placeholder dummy labels to satisfy lgb.Dataset constructor
 
         if not dataset_train:
-            # X_train, W_train = self.convert_to_weight(X=X_train)
-            dataset_train = construct_dataset(x=X_train, y=y_train, location=f'{self.path}datasets{os.path.sep}train', params=data_params, save=save, weight=W_train)
-            # dataset_train = construct_dataset_lowest_memory(X=X_train, y=y_train, location=self.path + 'datasets/train', params=data_params)
+            # X, W_train = self.convert_to_weight(X=X)
+            dataset_train = construct_dataset(x=X, y=y, location=f'{self.path}datasets{os.path.sep}train', params=data_params, save=save, weight=sample_weight)
+            # dataset_train = construct_dataset_lowest_memory(X=X, y=y, location=self.path + 'datasets/train', params=data_params)
         if (not dataset_val) and (X_val is not None) and (y_val is not None):
             # X_val, W_val = self.convert_to_weight(X=X_val)
-            dataset_val = construct_dataset(x=X_val, y=y_val, location=f'{self.path}datasets{os.path.sep}val', reference=dataset_train, params=data_params, save=save, weight=W_test)
+            dataset_val = construct_dataset(x=X_val, y=y_val, location=f'{self.path}datasets{os.path.sep}val', reference=dataset_train, params=data_params, save=save, weight=sample_weight_val)
             # dataset_val = construct_dataset_lowest_memory(X=X_val, y=y_val, location=self.path + 'datasets/val', reference=dataset_train, params=data_params)
         if self.problem_type == SOFTCLASS:
-            if y_train_og is not None:
-                dataset_train.softlabels = y_train_og
+            if y_og is not None:
+                dataset_train.softlabels = y_og
             if y_val_og is not None:
                 dataset_val.softlabels = y_val_og
         return dataset_train, dataset_val
@@ -294,15 +309,15 @@ class LGBModel(AbstractModel):
     # FIXME: Requires major refactor + refactor lgb_trial.py
     #  model names are not aligned with what is communicated to trainer!
     # FIXME: Likely tabular_nn_trial.py and abstract trial also need to be refactored heavily + hyperparameter functions
-    def _hyperparameter_tune(self, X_train, y_train, X_val, y_val, scheduler_options, **kwargs):
+    def _hyperparameter_tune(self, X, y, X_val, y_val, scheduler_options, **kwargs):
         time_start = time.time()
         logger.log(15, "Beginning hyperparameter tuning for Gradient Boosting Model...")
         self._set_default_searchspace()
-        params_copy = self.params.copy()
+        params_copy = self._get_params()
         if isinstance(params_copy['min_data_in_leaf'], Int):
             upper_minleaf = params_copy['min_data_in_leaf'].upper
-            if upper_minleaf > X_train.shape[0]:  # TODO: this min_data_in_leaf adjustment based on sample size may not be necessary
-                upper_minleaf = max(1, int(X_train.shape[0] / 5.0))
+            if upper_minleaf > X.shape[0]:  # TODO: this min_data_in_leaf adjustment based on sample size may not be necessary
+                upper_minleaf = max(1, int(X.shape[0] / 5.0))
                 lower_minleaf = params_copy['min_data_in_leaf'].lower
                 if lower_minleaf > upper_minleaf:
                     lower_minleaf = max(1, int(upper_minleaf / 3.0))
@@ -320,7 +335,7 @@ class LGBModel(AbstractModel):
         # Filter harmless warnings introduced in lightgbm 3.0, future versions plan to remove: https://github.com/microsoft/LightGBM/issues/3379
         warnings.filterwarnings('ignore', message='Overriding the parameters from Reference Dataset.')
         warnings.filterwarnings('ignore', message='categorical_column in param dict is overridden.')
-        dataset_train, dataset_val = self.generate_datasets(X_train=X_train, y_train=y_train, params=params_copy, X_val=X_val, y_val=y_val)
+        dataset_train, dataset_val = self.generate_datasets(X=X, y=y, params=params_copy, X_val=X_val, y_val=y_val)
         dataset_train_filename = "dataset_train.bin"
         train_file = self.path + dataset_train_filename
         if os.path.exists(train_file):  # clean up old files first
@@ -379,6 +394,9 @@ class LGBModel(AbstractModel):
             raise ValueError(f"unknown problem_type for LGBModel: {self.problem_type}")
         return train_loss_name
 
+    def _get_early_stopping_rounds(self, num_rows_train, strategy='auto'):
+        return get_early_stopping_rounds(num_rows_train=num_rows_train, strategy=strategy)
+
     def get_model_feature_importance(self, use_original_feature_names=False):
         feature_names = self.model.feature_name()
         importances = self.model.feature_importance()
@@ -395,3 +413,6 @@ class LGBModel(AbstractModel):
         )
         default_auxiliary_params.update(extra_auxiliary_params)
         return default_auxiliary_params
+
+    def _ag_params(self) -> set:
+        return {'ag.early_stop'}

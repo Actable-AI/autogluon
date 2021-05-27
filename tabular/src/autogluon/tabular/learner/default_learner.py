@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 from pandas import DataFrame
 
-from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION
-from autogluon.core.utils.utils import augment_rare_classes
+from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION, QUANTILE, AUTO_WEIGHT, BALANCE_WEIGHT
+from autogluon.core.utils.utils import augment_rare_classes, extract_column
 
 from .abstract_learner import AbstractLearner
 from ..trainer.auto_trainer import AutoTrainer
@@ -27,7 +27,7 @@ class DefaultLearner(AbstractLearner):
     def __init__(self, trainer_type=AutoTrainer, **kwargs):
         super().__init__(**kwargs)
         self.trainer_type = trainer_type
-
+        self.class_weights = None
         self._time_fit_total = None
         self._time_fit_preprocessing = None
         self._time_fit_training = None
@@ -60,7 +60,9 @@ class DefaultLearner(AbstractLearner):
             logger.log(20, f'Tuning Data Columns: {len([column for column in X_val.columns if column != self.label])}')
         time_preprocessing_start = time.time()
         logger.log(20, 'Preprocessing data ...')
+        self._pre_X_rows = len(X)
         X, y, X_val, y_val, X_unlabeled, holdout_frac, num_bag_folds = self.general_data_processing(X, X_val, X_unlabeled, holdout_frac, num_bag_folds)
+        self._post_X_rows = len(X)
         time_preprocessing_end = time.time()
         self._time_fit_preprocessing = time_preprocessing_end - time_preprocessing_start
         logger.log(20, f'Data preprocessing and feature engineering runtime = {round(self._time_fit_preprocessing, 2)}s ...')
@@ -74,10 +76,13 @@ class DefaultLearner(AbstractLearner):
             problem_type=self.label_cleaner.problem_type_transform,
             eval_metric=self.eval_metric,
             num_classes=self.label_cleaner.num_classes,
+            quantile_levels=self.quantile_levels,
             feature_metadata=self.feature_generator.feature_metadata,
             low_memory=True,
             k_fold=num_bag_folds,  # TODO: Consider moving to fit call
             n_repeats=num_bag_sets,  # TODO: Consider moving to fit call
+            sample_weight=self.sample_weight,
+            weight_evaluation=self.weight_evaluation,
             save_data=self.cache_data,
             random_state=self.random_state,
             verbosity=verbosity
@@ -112,6 +117,13 @@ class DefaultLearner(AbstractLearner):
 
         if self.problem_type is None:
             self.problem_type = self.infer_problem_type(X[self.label])
+            if self.quantile_levels is not None:
+                if self.problem_type == REGRESSION:
+                    self.problem_type = QUANTILE
+                else:
+                    raise ValueError("autogluon infers this to be classification problem for which quantile_levels "
+                                     "cannot be specified. If it is truly a quantile regression problem, "
+                                     "please specify:problem_type='quantile'")
 
         if X_val is not None and self.label in X_val.columns:
             holdout_frac = 1
@@ -129,7 +141,8 @@ class DefaultLearner(AbstractLearner):
         X, y = self.extract_label(X)
         self.label_cleaner = LabelCleaner.construct(problem_type=self.problem_type, y=y, y_uncleaned=y_uncleaned, positive_class=self._positive_class)
         y = self.label_cleaner.transform(y)
-
+        X = self.set_predefined_weights(X, y)
+        X, w = extract_column(X, self.sample_weight)
         if self.label_cleaner.num_classes is not None and self.problem_type != BINARY:
             logger.log(20, f'Train Data Class Count: {self.label_cleaner.num_classes}')
 
@@ -139,11 +152,15 @@ class DefaultLearner(AbstractLearner):
                 logger.warning('All X_val data contained low frequency classes, ignoring X_val and generating from subset of X')
                 X_val = None
                 y_val = None
+                w_val = None
             else:
                 X_val, y_val = self.extract_label(X_val)
                 y_val = self.label_cleaner.transform(y_val)
+                X_val = self.set_predefined_weights(X_val, y_val)
+                X_val, w_val = extract_column(X_val, self.sample_weight)
         else:
             y_val = None
+            w_val = None
 
         # TODO: Move this up to top of data before removing data, this way our feature generator is better
         logger.log(20, f'Using Feature Generators to preprocess the data ...')
@@ -187,8 +204,41 @@ class DefaultLearner(AbstractLearner):
             if X_unlabeled is not None:
                 X_unlabeled = X_super.tail(len(X_unlabeled)).set_index(X_unlabeled.index)
             del X_super
-
+        X, X_val = self.bundle_weights(X, w, X_val, w_val)  # TODO: consider not bundling sample-weights inside X, X_val
         return X, y, X_val, y_val, X_unlabeled, holdout_frac, num_bag_folds
+
+    def bundle_weights(self, X, w, X_val, w_val):
+        if w is not None:
+            X[self.sample_weight] = w
+            if X_val is not None:
+                if w_val is not None:
+                    X_val[self.sample_weight] = w_val
+                elif not self.weight_evaluation:
+                    nan_vals = np.empty((len(X_val),))
+                    nan_vals[:] = np.nan
+                    X_val[self.sample_weight] = nan_vals
+                else:
+                    raise ValueError(f"sample_weight column '{self.sample_weight}' cannot be missing from X_val if weight_evaluation=True")
+        return X, X_val
+
+    def set_predefined_weights(self, X, y):
+        if self.sample_weight not in [AUTO_WEIGHT,BALANCE_WEIGHT] or self.problem_type not in [BINARY,MULTICLASS]:
+            return X
+        if self.sample_weight in X.columns:
+            raise ValueError(f"Column name '{self.sample_weight}' cannot appear in your dataset with predefined weighting strategy. Please change it and try again.")
+        if self.sample_weight == BALANCE_WEIGHT:
+            if self.class_weights is None:
+                class_counts = y.value_counts()
+                n = len(y)
+                k = len(class_counts)
+                self.class_weights = {c : n/(class_counts[c]*k) for c in class_counts.index}
+                logger.log(20, "Assigning sample weights to balance differences in frequency of classes.")
+                logger.log(15, f"Balancing classes via the following weights: {self.class_weights}")
+            w = y.map(self.class_weights)
+        elif self.sample_weight == AUTO_WEIGHT:  # TODO: support more sophisticated auto_weight strategy
+            raise NotImplementedError(f"{AUTO_WEIGHT} strategy not yet supported.")
+        X[self.sample_weight] = w  # TODO: consider not bundling sample weights inside X
+        return X
 
     def adjust_threshold_if_necessary(self, y, threshold, holdout_frac, num_bag_folds):
         new_threshold, new_holdout_frac, new_num_bag_folds = self._adjust_threshold_if_necessary(y, threshold, holdout_frac, num_bag_folds)
@@ -204,7 +254,7 @@ class DefaultLearner(AbstractLearner):
 
     def _adjust_threshold_if_necessary(self, y, threshold, holdout_frac, num_bag_folds):
         new_threshold = threshold
-        if self.problem_type == REGRESSION:
+        if self.problem_type in [REGRESSION, QUANTILE]:
             num_rows = len(y)
             holdout_frac = max(holdout_frac, 1 / num_rows + 0.001)
             num_bag_folds = min(num_bag_folds, num_rows)

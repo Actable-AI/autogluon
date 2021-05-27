@@ -3,10 +3,11 @@ BINARY = 'binary'
 MULTICLASS = 'multiclass'
 REGRESSION = 'regression'
 SOFTCLASS = 'softclass'  # classification with soft-target (rather than classes, labels are probabilities of each class).
+QUANTILE = 'quantile'  # quantile regression (over multiple quantile levels, which are between 0.0 and 1.0)
 
 PROBLEM_TYPES_CLASSIFICATION = [BINARY, MULTICLASS]
 PROBLEM_TYPES_REGRESSION = [REGRESSION]
-PROBLEM_TYPES = PROBLEM_TYPES_CLASSIFICATION + PROBLEM_TYPES_REGRESSION + [SOFTCLASS]
+PROBLEM_TYPES = PROBLEM_TYPES_CLASSIFICATION + PROBLEM_TYPES_REGRESSION + [SOFTCLASS] + [QUANTILE]
 
 REFIT_FULL_NAME = 'refit_single_full'  # stack-name used for refit_single_full (aka "compressed") models
 REFIT_FULL_SUFFIX = "_FULL"  # suffix appended to model name for refit_single_full (aka "compressed") models
@@ -18,6 +19,9 @@ AG_ARGS_FIT = 'ag_args_fit'  # Contains arguments that impact model training, su
 AG_ARGS_ENSEMBLE = 'ag_args_ensemble'  # Contains arguments that impact model ensembling, such as if an ensemble model is allowed to use the original features.  # TODO: v0.1 add to documentation
 
 OBJECTIVES_TO_NORMALIZE = ['log_loss', 'pac_score', 'soft_log_loss']  # do not like predicted probabilities = 0
+
+AUTO_WEIGHT = 'auto_weight'
+BALANCE_WEIGHT = 'balance_weight'
 
 # TODO: Add docs to dedicated page, or should it live in AbstractModel?
 # TODO: How to reference correct version of docs?

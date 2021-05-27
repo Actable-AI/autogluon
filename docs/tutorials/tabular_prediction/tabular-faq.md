@@ -12,9 +12,18 @@ See ["Maximizing predictive performance" in the Quick Start Tutorial](tabular-qu
 Yes! The only functionality that may not work is hyperparameter tuning with the NN model (this should be resolved in the next MXNet update).
 
 
+### Can I use GPUs for model training?
+
+Yes! Most of the models used by AutoGluon support GPU training, including LightGBM, CatBoost, XGBoost, MXNet Neural Network, and FastAI Neural Network.
+
+To enable GPU training, specify in [predictor.fit](../../api/autogluon.predictor.html#autogluon.tabular.TabularPredictor.fit) the argument `ag_args_fit={'num_gpus': 1}`. This will enable GPU training for all models that support it. Multi-GPU training is still experimental.
+
+For most of these models, CUDA will have to be installed and some models may need special installations such as LightGBM and MXNet to be compatible with GPU training. Refer to [installation instructions](../../install.html) for more details.
+
+
 ### What machine is best for running AutoGluon Tabular?
 
-As an open-source library, AutoGluon can be run on any machine including your laptop. Currently the Tabular module does not benefit much from GPUs, so CPU machines are fine (in contrast, TextPrediction/ImagePrediction/ObjectDetection do greatly benefit from GPUs). Most Tabular issues arise due to lack of memory, so we recommend running on a machine with as much memory as possible. For example if using AWS instances for Tabular: we recommend [M5 instances](https://aws.amazon.com/ec2/instance-types/m5/), where a **m5.24xlarge** machine should be able to handle most datasets.
+As an open-source library, AutoGluon can be run on any machine including your laptop. Currently it is not necessary to use a GPU to train TabularPredictor so CPU machines are fine (in contrast, TextPredictor/ImagePredictor/ObjectDetector require GPUs). Most Tabular issues arise due to lack of memory, so we recommend running on a machine with as much memory as possible. For example if using AWS instances for Tabular: we recommend [M5 instances](https://aws.amazon.com/ec2/instance-types/m5/), where a **m5.24xlarge** machine should be able to handle most datasets.
 
 
 ### How to resolve memory issues?
@@ -29,7 +38,7 @@ See ["If you encounter disk space issues" in the In Depth Tutorial](tabular-inde
 
 ### How can I reduce the time required for training?
 
-Specify the `time_limit` argument in `fit()` to the number of seconds you are willing to wait (longer time limits generally result in superior predictive performance). You may also try other settings of the `presets` argument in `fit()`, and can also subsample your data for a quick trial run via `train_data.sample(n=SUBSAMPLE_SIZE)`. If a particular type of model is taking much longer to train on your data than the other types of models, you can tell AutoGluon not to train any models of this particular type by specifying its short-name in the `excluded_model_types` argument of `fit()`.
+Specify the `time_limit` argument in [predictor.fit](../../api/autogluon.predictor.html#autogluon.tabular.TabularPredictor.fit) to the number of seconds you are willing to wait (longer time limits generally result in superior predictive performance). You may also try other settings of the `presets` argument in [predictor.fit](../../api/autogluon.predictor.html#autogluon.tabular.TabularPredictor.fit), and can also subsample your data for a quick trial run via `train_data.sample(n=SUBSAMPLE_SIZE)`. If a particular type of model is taking much longer to train on your data than the other types of models, you can tell AutoGluon not to train any models of this particular type by specifying its short-name in the `excluded_model_types` argument of `fit()`.
 
 Since many of the strategies to reduce memory usage also reduce training times, also check out: ["If you encounter memory issues" in the In Depth Tutorial](tabular-indepth.html#if-you-encounter-memory-issues).
 
@@ -58,19 +67,19 @@ See ["Prediction options" in the In Depth Tutorial](tabular-indepth.html#predict
 
 ### Which classes do predicted probabilities correspond to?
 
-This should become obvious if you specify the `as_pandas` argument like this:
+This should become obvious if you look at the pandas DataFrame column names from the prediction probability output:
 
 ```
-predictor.predict_proba(test_data, as_pandas=True)
+predictor.predict_proba(test_data)
 ```
 
-For multiclass classification:
+For binary and multiclass classification:
 
 ```
 predictor.class_labels
 ```
 
-is a list of classes whose order corresponds to columns of `predict_proba()` output when it is a Numpy array. For binary classification, this is the order of classes when `predict_proba(as_multiclass=True)` is called.
+is a list of classes whose order corresponds to columns of `predict_proba(as_pandas=False)` output when it is a Numpy array.
 
 You can see which class AutoGluon treats as the positive class in binary classification via:
 
@@ -78,7 +87,7 @@ You can see which class AutoGluon treats as the positive class in binary classif
 predictor.positive_class
 ```
 
-The positive class can also be retrieved via `predictor.class_labels[-1]`. The output of `predict_proba()` for binary classification is the probability of the positive class.
+The positive class can also be retrieved via `predictor.class_labels[-1]`. The output of `predict_proba(as_multiclass=False)` for binary classification is the probability of the positive class.
 
 ### How can I use AutoGluon for interpretability?
 
@@ -139,6 +148,10 @@ Note that the `TabularDataset` object is essentially a [pandas DataFrame](https:
 
 To solely use custom data preprocessing and automatically apply your custom transformations to both the train data and all future data encountered during inference, you should instead create a custom FeatureGenerator. Follow this example in the source code: [examples/tabular/example_custom_feature_generator.py](https://github.com/awslabs/autogluon/blob/master/examples/tabular/example_custom_feature_generator.py)
 
+### How can I differently weight the importance of training examples?
+
+You can specify the `sample_weight` and `weight_evaluation` [arguments](../../api/autogluon.predictor.html#autogluon.tabular.TabularPredictor) when initializing a `TabularPredictor`.
+
 ### I'm receiving C++ warning spam during training or inference
 
 Warning message: [W ParallelNative.cpp:206] Warning: Cannot set number of intraop threads after parallel work has started or after set_num_threads call when using native parallel backend (function set_num_threads)
@@ -152,5 +165,4 @@ export OMP_NUM_THREADS=1
 
 ### Issues not addressed here
 
-First search to see if your issue is addressed in the other [tutorials](index.html)/[documentation](../../api/autogluon.task.html), or the [Github issues](https://github.com/awslabs/autogluon/issues). If it is not there,
-please open a [new Github Issue](https://github.com/awslabs/autogluon/issues/new) and clearly state your issue. If you have a bug, please include: your code (call `fit(..., verbosity=4)` which will print more details), the output printed during the code execution, and information about your operating system, Python version, and installed packages (output of `pip freeze`).
+First search if your issue is addressed in the [tutorials](index.html), [examples](https://github.com/awslabs/autogluon/tree/master/examples/tabular), [documentation](../../api/autogluon.predictor.html), or [Github issues](https://github.com/awslabs/autogluon/issues) (search both Closed and Open issues). If it is not there, please open a [new Github Issue](https://github.com/awslabs/autogluon/issues/new) and clearly state your issue. If you have a bug, please include: your code (call `fit(..., verbosity=4)` which will print more details), the output printed during the code execution, and information about your operating system, Python version, and installed packages (output of `pip freeze`).

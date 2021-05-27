@@ -7,6 +7,12 @@ Image Prediction
 .. container:: cards
 
    .. card::
+      :title: Dataset Preparation for Image Predictor
+      :link: image_prediction/dataset.html
+
+      Quick dataset preparation guide for image prediction.
+
+   .. card::
       :title: Quick Start Using FIT
       :link: image_prediction/beginner.html
 
@@ -30,6 +36,12 @@ Object Detection
 .. container:: cards
 
    .. card::
+      :title: Dataset Preparation for Object Detector
+      :link: object_detection/dataset.html
+
+      Quick dataset preparation guide for object detection.
+
+   .. card::
       :title: Quick Start Using FIT
       :link: object_detection/beginner.html
 
@@ -50,7 +62,7 @@ Tabular Prediction
       :title: In-depth FIT Tutorial
       :link: tabular_prediction/tabular-indepth.html
 
-      In-depth tutorial on boosting accuracy and controlling model fitting.
+      In-depth tutorial on controlling various aspects of model fitting.
 
    .. card::
       :title: Kaggle Tutorial
@@ -58,6 +70,23 @@ Tabular Prediction
 
       Using AutoGluon for Kaggle competitions with tabular data.
 
+   .. card::
+      :title: Data Tables Containing Text
+      :link: tabular_prediction/tabular-multimodal-text-others.html
+
+      Modeling data tables with text and numeric/categorical features.
+
+   .. card::
+      :title: Multi-Label Prediction
+      :link: tabular_prediction/tabular-multilabel.html
+
+      How to predict multiple columns in a data table.
+
+   .. card::
+      :title: FAQ
+      :link: tabular_prediction/tabular-faq.html
+
+      Frequently asked questions about AutoGluon-Tabular.
 
 Text Prediction
 ---------------
@@ -67,7 +96,14 @@ Text Prediction
       :title: Quick Start Tutorial
       :link: text_prediction/beginner.html
 
-      10 min tutorial on fitting prediction models with text in the dataset.
+      5 min tutorial on fitting prediction models with text in the dataset.
+
+   .. card::
+      :title: Text Prediction for Multimodal Tables with Text
+      :link: text_prediction/multimodal_text.html
+
+      Learning how AutoGluon Text can be used to train model for multimodal data table with text.
+
 
    .. card::
       :title: Customize Search Space and HPO
@@ -75,12 +111,6 @@ Text Prediction
 
       In-depth tutorial on learning how to customize the search space and try different
       HPO algorithms.
-
-   .. card::
-      :title: Dealing with Mixed Data Types
-      :link: text_prediction/heterogeneous.html
-
-      Learning how to use AutoGluon to handle datasets with mixed data types.
 
 
 Tune Custom Models
@@ -116,6 +146,14 @@ Tune Custom Models
       and its state-of-the-art schedulers and
       model-based searchers to tune a MLP.
 
+   .. card::
+      :title: Fair Bayesian Optimization
+      :link: course/fairbo.html
+
+      Example of how to use constrained 
+      Bayesian Optimization in AutoGluon to tune 
+      ML models under fairness constraints.
+
 
 Neural Architecture Search
 --------------------------
@@ -142,7 +180,6 @@ Neural Architecture Search
    course/index
    image_prediction/index
    object_detection/index
-   text_classification/index
    text_prediction/index
    tabular_prediction/index
    customize/index

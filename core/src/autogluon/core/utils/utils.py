@@ -8,6 +8,7 @@ import time
 import sys
 from typing import Callable
 from datetime import datetime
+from functools import wraps
 
 import numpy as np
 import pandas as pd
@@ -17,8 +18,8 @@ from pandas import DataFrame, Series
 from sklearn.model_selection import KFold, StratifiedKFold, RepeatedKFold, RepeatedStratifiedKFold
 from sklearn.model_selection import train_test_split
 
-from ..constants import BINARY, REGRESSION, MULTICLASS, SOFTCLASS
-from ..metrics import accuracy, root_mean_squared_error, Scorer
+from ..constants import BINARY, REGRESSION, MULTICLASS, SOFTCLASS, QUANTILE
+from ..metrics import accuracy, root_mean_squared_error, pinball_loss, Scorer
 from ..features.infer_types import get_type_map_raw
 from ..features.types import R_INT, R_FLOAT, R_CATEGORY
 
@@ -38,6 +39,7 @@ def get_gpu_count():
 
 
 def generate_kfold(X, y=None, n_splits=5, random_state=0, stratified=False, n_repeats=1):
+    # TODO: Add GroupKFold
     if stratified and (y is not None):
         if n_repeats > 1:
             kf = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=random_state)
@@ -233,10 +235,24 @@ def augment_rare_classes(X, label, threshold):
     logger.log(15, "Replicated some data from rare classes in training set because eval_metric requires all classes")
     return X
 
+
+def get_pred_from_proba_df(y_pred_proba, problem_type=BINARY):
+    """From input DataFrame of pred_proba, return Series of pred"""
+    if problem_type == REGRESSION:
+        y_pred = y_pred_proba
+    elif problem_type == QUANTILE:
+        y_pred = y_pred_proba
+    else:
+        y_pred = y_pred_proba.idxmax(axis=1)
+    return y_pred
+
+
 def get_pred_from_proba(y_pred_proba, problem_type=BINARY):
     if problem_type == BINARY:
         y_pred = [1 if pred >= 0.5 else 0 for pred in y_pred_proba]
     elif problem_type == REGRESSION:
+        y_pred = y_pred_proba
+    elif problem_type == QUANTILE:
         y_pred = y_pred_proba
     else:
         y_pred = np.argmax(y_pred_proba, axis=1)
@@ -247,7 +263,7 @@ def generate_train_test_split(X: DataFrame, y: Series, problem_type: str, test_s
     if (test_size <= 0.0) or (test_size >= 1.0):
         raise ValueError("fraction of data to hold-out must be specified between 0 and 1")
 
-    if problem_type in [REGRESSION, SOFTCLASS]:
+    if problem_type in [REGRESSION, QUANTILE, SOFTCLASS]:
         stratify = None
     else:
         stratify = y
@@ -367,15 +383,61 @@ def infer_eval_metric(problem_type: str) -> Scorer:
         return accuracy
     elif problem_type == MULTICLASS:
         return accuracy
+    elif problem_type == QUANTILE:
+        return pinball_loss
     else:
         return root_mean_squared_error
 
 
+def extract_column(X, col_name):
+    """Extract specified column from dataframe. """
+    if col_name is None or col_name not in list(X.columns):
+        return X, None
+    w = X[col_name].copy()
+    X = X.drop(col_name, axis=1)
+    return X, w
+
+
+def compute_weighted_metric(y, y_pred, metric, weights, weight_evaluation=None, **kwargs):
+    """ Report weighted metric if: weights is not None, weight_evaluation=True, and the given metric supports sample weights.
+        If weight_evaluation=None, it will be set to False if weights=None, True otherwise.
+    """
+    if not metric.needs_quantile:
+        kwargs.pop('quantile_levels', None)
+    if weight_evaluation is None:
+        weight_evaluation = not (weights is None)
+    if weight_evaluation and weights is None:
+        raise ValueError("Sample weights cannot be None when weight_evaluation=True.")
+    if not weight_evaluation:
+        return metric(y, y_pred, **kwargs)
+    try:
+        weighted_metric = metric(y, y_pred, sample_weight=weights, **kwargs)
+    except (ValueError, TypeError, KeyError):
+        if hasattr(metric, 'name'):
+            metric_name = metric.name
+        else:
+            metric_name = metric
+        logger.log(30, f"WARNING: eval_metric='{metric_name}' does not support sample weights so they will be ignored in reported metric.")
+        weighted_metric = metric(y, y_pred, **kwargs)
+    return weighted_metric
+
+
 # Note: Do not send training data as input or the importances will be overfit.
 # TODO: Improve time estimate (Currently pessimistic)
-def compute_permutation_feature_importance(X: pd.DataFrame, y: pd.Series, predict_func: Callable[..., np.ndarray], eval_metric: Scorer, features: list = None, subsample_size=None, num_shuffle_sets: int = None,
-                                           predict_func_kwargs: dict = None, transform_func: Callable[..., pd.DataFrame] = None, transform_func_kwargs: dict = None,
-                                           time_limit: float = None, silent=False, log_prefix='', importance_as_list=False) -> pd.DataFrame:
+def compute_permutation_feature_importance(X: pd.DataFrame,
+                                           y: pd.Series,
+                                           predict_func: Callable[..., np.ndarray],
+                                           eval_metric: Scorer,
+                                           features: list = None,
+                                           subsample_size=None,
+                                           num_shuffle_sets: int = None,
+                                           predict_func_kwargs: dict = None,
+                                           transform_func: Callable[..., pd.DataFrame] = None,
+                                           transform_func_kwargs: dict = None,
+                                           time_limit: float = None,
+                                           silent=False,
+                                           log_prefix='',
+                                           importance_as_list=False) -> pd.DataFrame:
     """
     Computes a trained model's feature importance via permutation shuffling (https://explained.ai/rf-importance/).
     A feature's importance score represents the performance drop that results when the model makes predictions on a perturbed copy of the dataset where this feature's values have been randomly shuffled across rows.
@@ -406,6 +468,13 @@ def compute_permutation_feature_importance(X: pd.DataFrame, y: pd.Series, predic
     features : list, default None
         List of features to calculate importances for.
         If None, all features' importances will be calculated.
+        Can contain tuples as elements of (feature_name, feature_list) form.
+            feature_name can be any string so long as it is unique with all other feature names / features in the list.
+            feature_list can be any list of valid features in the data.
+            This will compute importance of the combination of features in feature_list, naming the set of features in the returned DataFrame feature_name.
+            This importance will differ from adding the individual importances of each feature in feature_list, and will be more accurate to the overall group importance.
+            Example: ['featA', 'featB', 'featC', ('featBC', ['featB', 'featC'])]
+            In this example, the importance of 'featBC' will be calculated by jointly permuting 'featB' and 'featC' together as if they were a single two-dimensional feature.
     subsample_size : int, default None
         The amount of data rows to sample when computing importances.
         Higher values will improve the quality of feature importance estimates, but linearly increase the runtime.
@@ -461,6 +530,9 @@ def compute_permutation_feature_importance(X: pd.DataFrame, y: pd.Series, predic
         transform_func_kwargs = dict()
     if features is None:
         features = list(X.columns)
+
+    _validate_features(features=features, valid_features=list(X.columns))
+
     num_features = len(features)
 
     if subsample_size is not None:
@@ -527,6 +599,8 @@ def compute_permutation_feature_importance(X: pd.DataFrame, y: pd.Series, predic
 
             row_index = 0
             for feature in parallel_computed_features:
+                if isinstance(feature, tuple):
+                    feature = feature[1]
                 row_index_end = row_index + row_count
                 X_raw.loc[row_index:row_index_end - 1, feature] = X_shuffled[feature].values
                 row_index = row_index_end
@@ -540,14 +614,20 @@ def compute_permutation_feature_importance(X: pd.DataFrame, y: pd.Series, predic
 
             row_index = 0
             for feature in parallel_computed_features:
+                if isinstance(feature, tuple):
+                    feature_name = feature[0]
+                    feature_list = feature[1]
+                else:
+                    feature_name = feature
+                    feature_list = feature
                 # calculating importance score for given feature
                 row_index_end = row_index + row_count
                 y_pred_cur = y_pred[row_index:row_index_end]
                 score = eval_metric(y, y_pred_cur)
-                fi[feature] = score_baseline - score
+                fi[feature_name] = score_baseline - score
 
                 # resetting to original values for processed feature
-                X_raw.loc[row_index:row_index_end - 1, feature] = X[feature].values
+                X_raw.loc[row_index:row_index_end - 1, feature_list] = X[feature_list].values
 
                 row_index = row_index_end
         fi_dict_list.append(fi)
@@ -572,6 +652,37 @@ def compute_permutation_feature_importance(X: pd.DataFrame, y: pd.Series, predic
         logger.log(20, f'{log_prefix}\t{round(time.time() - time_start, 2)}s\t= Actual runtime (Completed {shuffle_repeats_completed} of {num_shuffle_sets} shuffle sets){log_final_suffix}')
 
     return fi_df
+
+
+def _validate_features(features: list, valid_features: list):
+    """Raises exception if features list contains invalid features or duplicate features"""
+    valid_features = set(valid_features)
+    used_features = set()
+    # validate features
+    for feature in features:
+        if isinstance(feature, tuple):
+            feature_name = feature[0]
+            feature_list = feature[1]
+            feature_list_set = set(feature_list)
+            if len(feature_list_set) != len(feature_list):
+                raise ValueError(f'Feature list contains duplicate features:\n'
+                                 f'{feature_list}')
+            for feature_in_list in feature_list:
+                if feature_in_list not in valid_features:
+                    raise ValueError(f'Feature does not exist in data: {feature_in_list}\n'
+                                     f'This feature came from the following feature set:\n'
+                                     f'{feature}\n'
+                                     f'Valid Features:\n'
+                                     f'{valid_features}')
+        else:
+            feature_name = feature
+            if feature_name not in valid_features:
+                raise ValueError(f'Feature does not exist in data: {feature_name}\n'
+                                 f'Valid Features:\n'
+                                 f'{valid_features}')
+        if feature_name in used_features:
+            raise ValueError(f'Feature is present multiple times in feature list: {feature_name}')
+        used_features.add(feature_name)
 
 
 def _compute_fi_with_stddev(fi_list_dict: dict, importance_as_list=False) -> DataFrame:
@@ -625,6 +736,22 @@ def _get_safe_fi_batch_count(X, num_features, X_transformed=None, max_memory_rat
     return feature_batch_count
 
 
+def suspend_logging(func):
+    """hides any logs within the called func that are below warnings"""
+    @wraps(func)
+    def inner(*args, **kwargs):
+        root_logger = logging.getLogger()
+        previous_log_level = root_logger.getEffectiveLevel()
+        try:
+            root_logger.setLevel(max(30, previous_log_level))
+            return func(*args, **kwargs)
+        finally:
+            root_logger.setLevel(previous_log_level)
+    return inner
+
+
+# suspend_logging to hide the Pandas log of NumExpr initialization
+@suspend_logging
 def get_approximate_df_mem_usage(df: DataFrame, sample_ratio=0.2):
     if sample_ratio >= 1:
         return df.memory_usage(deep=True)
@@ -643,6 +770,7 @@ def get_approximate_df_mem_usage(df: DataFrame, sample_ratio=0.2):
                 sample_ratio_cat = num_categories_sample / num_categories
                 memory_usage[column] = df[column].cat.codes.dtype.itemsize * num_rows + df[column].cat.categories[:num_categories_sample].memory_usage(deep=True) / sample_ratio_cat
         if columns_inexact:
+            # this line causes NumExpr log, suspend_logging is used to hide the log.
             memory_usage_inexact = df[columns_inexact].head(num_rows_sample).memory_usage(deep=True)[columns_inexact] / sample_ratio
             memory_usage = memory_usage_inexact.combine_first(memory_usage)
         return memory_usage
@@ -663,6 +791,5 @@ def get_gpu_free_memory():
         memory_free_info = _output_to_list(subprocess.check_output(COMMAND.split()))[1:]
         memory_free_values = [int(x.split()[0]) for i, x in enumerate(memory_free_info)]
     except:
-        # could fail due to 
         memory_free_values = []
     return memory_free_values
