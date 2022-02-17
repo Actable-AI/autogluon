@@ -133,7 +133,7 @@ class LinearModel(AbstractModel):
     def _set_default_params(self):
         default_params = {'random_state': 0, 'fit_intercept': True}
         if self.problem_type != REGRESSION:
-            default_params.update({'solver': _get_solver(self.problem_type), 'n_jobs': -1})
+            default_params.update({'solver': _get_solver(self.problem_type), 'n_jobs': 1})
         default_params.update(get_param_baseline())
         for param, val in default_params.items():
             self._set_default_param_value(param, val)
