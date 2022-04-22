@@ -26,7 +26,7 @@ def get_base_params():
     base_params = {
         'n_estimators': DEFAULT_NUM_BOOST_ROUND,
         'learning_rate': 0.1,
-        'n_jobs': 1,
+        'n_jobs': os.cpu_count(),
         'proc.max_category_levels' : MAX_CATEGORY_LEVELS,
     }
     return base_params

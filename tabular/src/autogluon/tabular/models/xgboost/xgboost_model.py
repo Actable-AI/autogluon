@@ -71,6 +71,7 @@ class XGBoostModel(AbstractModel):
              y_val=None,
              time_limit=None,
              num_gpus=0,
+             num_cpus=None,
              sample_weight=None,
              sample_weight_val=None,
              verbosity=2,
@@ -79,6 +80,8 @@ class XGBoostModel(AbstractModel):
         start_time = time.time()
         ag_params = self._get_ag_params()
         params = self._get_model_params()
+        if num_cpus:
+            params['n_jobs'] = num_cpus
         max_category_levels = params.pop('proc.max_category_levels', 100)
 
         if verbosity <= 2:
